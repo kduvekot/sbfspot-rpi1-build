@@ -1,6 +1,13 @@
 name: Build SBFspot for ARMv6 armhf (Raspberry Pi 1)
 
 on:
+  push:
+    branches:
+      - main
+      - 'claude/**'
+    paths:
+      - '.github/workflows/build.yml'
+      - 'install.sh'
   workflow_dispatch:
     inputs:
       sbfspot_version:
