@@ -37,15 +37,15 @@ jobs:
       - name: Install QEMU and debootstrap
         run: |
           sudo apt-get update
-          sudo apt-get install -y qemu-user-static debootstrap binfmt-support
+          sudo apt-get install -y qemu-user-static debootstrap binfmt-support \
+            raspbian-archive-keyring
 
       - name: Create Raspbian Trixie armhf rootfs
         run: |
           sudo debootstrap \
             --arch=armhf \
             --foreign \
-            --keyring=/usr/share/keyrings/debian-archive-keyring.gpg \
-            --no-check-gpg \
+            --keyring=/usr/share/keyrings/raspbian-archive-keyring.gpg \
             trixie \
             rootfs \
             http://archive.raspbian.org/raspbian/
