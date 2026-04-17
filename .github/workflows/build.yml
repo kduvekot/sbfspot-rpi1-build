@@ -8,6 +8,7 @@ on:
     paths:
       - '.github/workflows/build.yml'
       - 'install.sh'
+      - 'setup.sh'
   workflow_dispatch:
     inputs:
       sbfspot_version:
@@ -170,3 +171,60 @@ jobs:
           name: sbfspot-armv6-armhf-sqlite
           path: sbfspot-armv6-armhf-sqlite.tar.gz
           retention-days: 90
+
+  release:
+    name: Publish GitHub Release
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: sbfspot-armv6-armhf-sqlite
+
+      - name: Create release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          # Tag looks like: v3.9.12-rpi1.42
+          # Strip leading 'V' or 'v' from upstream SBFspot tag, lowercase.
+          UPSTREAM="${SBFSPOT_VERSION#[Vv]}"
+          TAG="v${UPSTREAM}-rpi1.${{ github.run_number }}"
+
+          # Pre-release flag when not on main (e.g. dev branches, PR builds).
+          PRERELEASE_FLAG=""
+          if [[ "${{ github.ref }}" != "refs/heads/main" ]]; then
+            PRERELEASE_FLAG="--prerelease"
+            TAG="${TAG}-dev"
+          fi
+
+          TITLE="SBFspot ${UPSTREAM} for Raspberry Pi 1 (ARMv6 armhf) — build #${{ github.run_number }}"
+
+          NOTES=$(cat <<EOF
+          Pre-compiled SBFspot **${UPSTREAM}** for Raspberry Pi 1 / Zero (ARMv6 armhf).
+
+          - Target: ARMv6 + VFPv2, armhf (hard-float), \`/lib/ld-linux-armhf.so.3\`
+          - Build variant: SQLite, Bluetooth enabled, includes SBFspotUploadDaemon
+          - Built against Raspbian Trixie armhf via debootstrap + QEMU user-mode
+          - Source commit: ${{ github.sha }}
+          - Workflow run: https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}
+
+          ## Install (one-liner)
+
+          \`\`\`bash
+          curl -sL https://raw.githubusercontent.com/${{ github.repository }}/main/setup.sh | sudo bash
+          \`\`\`
+
+          See \`setup.sh --help\` for flags.
+          EOF
+          )
+
+          gh release create "$TAG" \
+            --repo "${{ github.repository }}" \
+            --title "$TITLE" \
+            --notes "$NOTES" \
+            $PRERELEASE_FLAG \
+            sbfspot-armv6-armhf-sqlite.tar.gz

@@ -19,19 +19,73 @@ Any Raspberry Pi with an **ARMv6** processor running **Raspberry Pi OS (32-bit)*
 - Raspberry Pi Zero / Zero W / Zero WH
 - Compute Module 1
 
-## Usage
+## Install
 
-### 1. Trigger the build
+### One-liner (interactive)
 
-Go to [Actions](../../actions) → "Build SBFspot for ARMv6 armhf" → "Run workflow".
+On your Pi:
 
-Enter the SBFspot version tag (e.g. `V3.9.12`). The build takes ~15-20 minutes.
+```bash
+curl -sL https://raw.githubusercontent.com/kduvekot/sbfspot-rpi1-build/main/setup.sh | sudo bash
+```
 
-### 2. Download the artifact
+This downloads the latest [release](../../releases/latest), installs the binaries into `/usr/local/bin/sbfspot.3/`, creates a dedicated `sbfspot` system user, and prompts for your inverter's Bluetooth MAC. Latitude/longitude are auto-detected via IP geolocation (confirm before use). Everything else gets sensible defaults.
 
-Once the build completes, download `sbfspot-armv6-armhf-sqlite.tar.gz` from the workflow run.
+### One-liner (flags, no prompts)
 
-### 3. Install on your Pi
+```bash
+curl -sL https://raw.githubusercontent.com/kduvekot/sbfspot-rpi1-build/main/setup.sh \
+  | sudo bash -s -- \
+      --inverter 00:80:25:XX:XX:XX \
+      --lat 50.80 --lon 4.33 --tz Europe/Amsterdam --locale nl-NL \
+      --install-cron --non-interactive
+```
+
+### Binaries only (edit config by hand)
+
+```bash
+curl -sL https://raw.githubusercontent.com/kduvekot/sbfspot-rpi1-build/main/setup.sh \
+  | sudo bash -s -- --skeleton
+```
+
+Drops the stock SBFspot default config at `/etc/sbfspot/SBFspot.cfg`, then you edit it manually.
+
+### Flags
+
+| Flag | Default | Notes |
+|---|---|---|
+| `--inverter <MAC>` | prompt | Repeatable; first is the MIS master. |
+| `--lat <decimal>` | geoIP | ipapi.co lookup, asks to confirm. |
+| `--lon <decimal>` | geoIP | |
+| `--tz <zone>` | `/etc/timezone` | |
+| `--locale <code>` | `en-US` | `nl-NL`, `de-DE`, etc. |
+| `--run-user <name>` | `sbfspot` | System user created automatically. |
+| `--data-dir <path>` | `/var/lib/sbfspot/data` | Where CSVs and `SBFspot.db` live. |
+| `--plant-name <str>` | hostname | |
+| `--decimal dot\|comma` | from locale | CSV decimal separator. |
+| `--password <pw>` | `0000` | SMA factory default. |
+| `--install-cron` | off | Installs `/etc/cron.d/sbfspot`. |
+| `--cron <spec>` | `*/5 * * * *` | Upstream default polling cadence. |
+| `--archive-cron <spec>` | `55 23 * * *` | Daily archive. |
+| `--skeleton` | off | Stock config, no prompts. |
+| `--non-interactive` | off | Error if required field missing. |
+| `--no-geoip` | off | Skip the ipapi.co call. |
+
+Run `setup.sh --help` for the full list.
+
+### Test after install
+
+```bash
+sudo -u sbfspot /usr/local/bin/sbfspot.3/SBFspot -v -finq -nocsv -nosql
+```
+
+### Uninstall / reconfigure
+
+`/etc/cron.d/sbfspot` is a single file — `sudo rm` removes the schedule. To re-template the config, `sudo rm /etc/sbfspot/SBFspot.cfg` and re-run `setup.sh`.
+
+## Manual install (offline / advanced)
+
+If you'd rather unpack the tarball yourself, download it from the [latest release](../../releases/latest) and run the bundled `install.sh`:
 
 ```bash
 tar xzf sbfspot-armv6-armhf-sqlite.tar.gz
@@ -39,48 +93,7 @@ cd sbfspot-armv6-armhf-sqlite
 sudo bash install.sh
 ```
 
-The installer will:
-- Install binaries to `/usr/local/bin/sbfspot.3/`
-- Create the SQLite database
-- Copy default config files (without overwriting existing ones)
-
-### 4. Configure
-
-Edit `/usr/local/bin/sbfspot.3/SBFspot.cfg`:
-
-```ini
-BTAddress=00:00:00:00:00:00     # Your inverter's Bluetooth address (hcitool scan)
-Latitude=50.80                   # Your location
-Longitude=4.33
-Timezone=Europe/Brussels
-SQL_Database=/home/pi/smadata/SBFspot.db
-OutputPath=/home/pi/smadata/%Y
-```
-
-### 5. Test
-
-```bash
-# Check version
-/usr/local/bin/sbfspot.3/SBFspot -v
-
-# Query inverters (daytime only, or use -finq to force)
-/usr/local/bin/sbfspot.3/SBFspot -v -finq -nocsv -nosql
-```
-
-### 6. Schedule via crontab
-
-```bash
-crontab -e
-```
-
-Add:
-```cron
-# Poll inverters every 2 minutes during daylight
-*/2 6-22 * * * /usr/local/bin/sbfspot.3/SBFspot -v -ad0 -am0 -ae0 > /dev/null 2>&1
-
-# Collect daily/monthly archive data once per day before sunrise
-55 5 * * * /usr/local/bin/sbfspot.3/SBFspot -v -ad1 -am1 -ae1 > /dev/null 2>&1
-```
+The bundled `install.sh` is the older, simpler installer — it only lays down files and creates the DB, no system user or cron.
 
 ## What's included in the artifact
 
