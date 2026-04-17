@@ -37,8 +37,18 @@ jobs:
       - name: Install QEMU and debootstrap
         run: |
           sudo apt-get update
-          sudo apt-get install -y qemu-user-static debootstrap binfmt-support \
-            raspbian-archive-keyring
+          sudo apt-get install -y qemu-user-static debootstrap binfmt-support
+
+      - name: Install Raspbian archive keyring
+        run: |
+          # raspbian-archive-keyring isn't in Ubuntu's repos, so fetch the
+          # .deb directly from Raspbian. This provides the signing key
+          # debootstrap needs to verify the Raspbian trixie Release file.
+          curl -sL \
+            "http://archive.raspbian.org/raspbian/pool/main/r/raspbian-archive-keyring/raspbian-archive-keyring_20120528.4_all.deb" \
+            -o /tmp/raspbian-archive-keyring.deb
+          sudo dpkg -i /tmp/raspbian-archive-keyring.deb
+          ls -la /usr/share/keyrings/raspbian-archive-keyring.gpg
 
       - name: Create Raspbian Trixie armhf rootfs
         run: |
