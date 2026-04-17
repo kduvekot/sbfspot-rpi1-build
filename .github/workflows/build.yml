@@ -1,0 +1,155 @@
+name: Build SBFspot for ARMv6 armhf (Raspberry Pi 1)
+
+on:
+  workflow_dispatch:
+    inputs:
+      sbfspot_version:
+        description: 'SBFspot version tag (e.g. V3.9.12)'
+        required: true
+        default: 'V3.9.12'
+
+env:
+  SBFSPOT_VERSION: ${{ github.event.inputs.sbfspot_version || 'V3.9.12' }}
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    name: Build in Raspbian Trixie armhf rootfs
+
+    steps:
+      - name: Checkout build repo
+        uses: actions/checkout@v4
+
+      - name: Download SBFspot source
+        run: |
+          curl -sL "https://github.com/SBFspot/SBFspot/archive/${{ env.SBFSPOT_VERSION }}.tar.gz" \
+            -o sbfspot-source.tar.gz
+          tar xzf sbfspot-source.tar.gz
+          mv SBFspot-* SBFspot-src
+
+      - name: Install QEMU and debootstrap
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y qemu-user-static debootstrap binfmt-support
+
+      - name: Create Raspbian Trixie armhf rootfs
+        run: |
+          sudo debootstrap \
+            --arch=armhf \
+            --foreign \
+            --keyring=/usr/share/keyrings/debian-archive-keyring.gpg \
+            --no-check-gpg \
+            trixie \
+            rootfs \
+            http://archive.raspbian.org/raspbian/
+
+          sudo cp /usr/bin/qemu-arm-static rootfs/usr/bin/
+          sudo chroot rootfs /debootstrap/debootstrap --second-stage
+
+      - name: Install build dependencies in rootfs
+        run: |
+          sudo chroot rootfs apt-get update
+          sudo chroot rootfs apt-get install -y --no-install-recommends \
+            build-essential \
+            libbluetooth-dev \
+            libboost-date-time-dev \
+            libboost-system-dev \
+            libsqlite3-dev \
+            libcurl4-openssl-dev \
+            sqlite3
+
+      - name: Build SBFspot and SBFspotUploadDaemon
+        run: |
+          sudo cp -r SBFspot-src rootfs/build
+
+          sudo chroot rootfs bash -c '
+            set -e
+
+            echo "=== Environment ==="
+            uname -m
+            dpkg --print-architecture
+            cat /etc/debian_version
+            readelf -A /bin/ls | grep -E "Tag_CPU|Tag_FP" | head -5
+
+            echo "=== Building SBFspot (SQLite) ==="
+            cd /build/SBFspot
+            make sqlite
+
+            echo "=== Building SBFspotUploadDaemon (SQLite) ==="
+            cd /build/SBFspotUploadDaemon
+            make sqlite
+          '
+
+      - name: Verify in clean Raspbian environment
+        run: |
+          # Remove all -dev packages to simulate a clean Pi
+          sudo chroot rootfs apt-get remove -y --purge \
+            build-essential 'lib*-dev' cpp gcc g++ make dpkg-dev \
+            2>/dev/null || true
+          sudo chroot rootfs apt-get autoremove -y 2>/dev/null || true
+
+          # Install only runtime dependencies
+          sudo chroot rootfs apt-get install -y --no-install-recommends \
+            libbluetooth3 \
+            libboost-date-time1.83.0 \
+            libboost-system1.83.0 \
+            libsqlite3-0 \
+            libcurl4t64 \
+            sqlite3 \
+            binutils
+
+          sudo chroot rootfs bash -c '
+            set -e
+
+            echo "=== Binary architecture ==="
+            readelf -h /build/SBFspot/sqlite/bin/SBFspot | grep -E "Class|Machine"
+            readelf -A /build/SBFspot/sqlite/bin/SBFspot | grep -E "Tag_CPU|Tag_FP|Tag_ABI" | head -10
+
+            echo "=== Shared library resolution ==="
+            ldd /build/SBFspot/sqlite/bin/SBFspot
+            ldd /build/SBFspotUploadDaemon/sqlite/bin/SBFspotUploadDaemon
+
+            echo "=== SBFspot version ==="
+            /build/SBFspot/sqlite/bin/SBFspot -version || true
+
+            echo "=== SQLite support ==="
+            /build/SBFspot/sqlite/bin/SBFspot -? 2>&1 | grep -i sqlite
+
+            echo "=== Database schema test ==="
+            sqlite3 /tmp/test.db < /build/SBFspot/CreateSQLiteDB.sql
+            echo "Tables:"
+            sqlite3 /tmp/test.db ".tables"
+            rm -f /tmp/test.db
+
+            echo "=== Dynamic linker path ==="
+            readelf -l /build/SBFspot/sqlite/bin/SBFspot | grep interpreter
+
+            echo "=== All verification checks passed ==="
+          '
+
+      - name: Package artifact
+        run: |
+          PKGDIR="sbfspot-armv6-armhf-sqlite"
+          mkdir -p "$PKGDIR"
+
+          sudo cp rootfs/build/SBFspot/sqlite/bin/SBFspot "$PKGDIR/"
+          sudo cp rootfs/build/SBFspotUploadDaemon/sqlite/bin/SBFspotUploadDaemon "$PKGDIR/"
+          sudo cp rootfs/build/SBFspot/SBFspot.cfg "$PKGDIR/SBFspot.default.cfg"
+          sudo cp rootfs/build/SBFspotUploadDaemon/SBFspotUpload.default.cfg "$PKGDIR/"
+          sudo cp rootfs/build/SBFspot/CreateSQLiteDB.sql "$PKGDIR/"
+          sudo cp rootfs/build/SBFspot/TagList*.txt "$PKGDIR/"
+          sudo cp rootfs/build/SBFspot/date_time_zonespec.csv "$PKGDIR/"
+          cp install.sh "$PKGDIR/"
+          chmod +x "$PKGDIR/install.sh"
+
+          tar czf "$PKGDIR.tar.gz" "$PKGDIR/"
+
+          echo "=== Package contents ==="
+          tar tzf "$PKGDIR.tar.gz"
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: sbfspot-armv6-armhf-sqlite
+          path: sbfspot-armv6-armhf-sqlite.tar.gz
+          retention-days: 90
