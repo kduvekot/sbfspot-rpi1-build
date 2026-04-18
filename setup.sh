@@ -235,7 +235,7 @@ setcap cap_net_raw,cap_net_admin+eip "$INSTALL_DIR/SBFspot"
 DB_FILE="$DATA_DIR/SBFspot.db"
 if [[ ! -f "$DB_FILE" ]]; then
     info "Creating SQLite database at $DB_FILE"
-    sqlite3 "$DB_FILE" < "$INSTALL_DIR/CreateSQLiteDB.sql"
+    sqlite3 "$DB_FILE" < "$INSTALL_DIR/CreateSQLiteDB.sql" >/dev/null
 fi
 
 chown -R "$RUN_USER:$RUN_USER" "$DATA_DIR" "$LOG_DIR"
@@ -357,6 +357,12 @@ if [[ ! -f "$UPLOAD_CFG" ]]; then
     install -m 640 "$CONFIG_DIR/SBFspotUpload.default.cfg" "$UPLOAD_CFG"
     chown root:"$RUN_USER" "$UPLOAD_CFG"
 fi
+
+# SBFspot's default lookup is for SBFspot.cfg next to the binary. Symlink
+# /etc/sbfspot/*.cfg into $INSTALL_DIR so plain `SBFspot` works without
+# needing -cfg on every invocation.
+ln -sfn "$CFG" "$INSTALL_DIR/SBFspot.cfg"
+ln -sfn "$UPLOAD_CFG" "$INSTALL_DIR/SBFspotUpload.cfg"
 
 # ---- cron ----------------------------------------------------------------
 if [[ $INSTALL_CRON == 1 ]]; then
