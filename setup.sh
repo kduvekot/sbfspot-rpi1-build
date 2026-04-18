@@ -129,8 +129,30 @@ case "$ARCH" in
     *) warn "This build targets ARMv6 armhf; running on $ARCH — binaries will not execute." ;;
 esac
 
-for cmd in curl tar sqlite3 setcap useradd; do
-    command -v "$cmd" >/dev/null 2>&1 || die "Missing required command: $cmd (install it first)."
+# curl and tar should always be there (systemd pulls them in on Pi OS Lite).
+for cmd in curl tar; do
+    command -v "$cmd" >/dev/null 2>&1 || die "Missing required command: $cmd."
+done
+
+# Install SBFspot's runtime libs + tools the installer itself needs.
+# Package names are Trixie (Debian 13 / Raspberry Pi OS Lite 12+); the binary
+# was built against these so mismatched releases will get a clear apt error.
+APT_PACKAGES=(
+    libbluetooth3
+    libboost-date-time1.83.0
+    libboost-system1.83.0
+    libsqlite3-0
+    libcurl4t64
+    sqlite3
+    libcap2-bin
+)
+info "Installing runtime dependencies via apt-get"
+export DEBIAN_FRONTEND=noninteractive
+apt-get update -qq
+apt-get install -y --no-install-recommends "${APT_PACKAGES[@]}"
+
+for cmd in sqlite3 setcap useradd; do
+    command -v "$cmd" >/dev/null 2>&1 || die "Missing $cmd after apt-get install — check apt output above."
 done
 
 prompt() {
