@@ -76,7 +76,7 @@ Run `setup.sh --help` for the full list.
 ### Test after install
 
 ```bash
-sudo -u sbfspot /usr/local/bin/sbfspot.3/SBFspot -v -finq -nocsv -nosql
+sudo -u sbfspot /usr/local/bin/sbfspot.3/SBFspot -v -finq -nocsv -nosql -cfg/etc/sbfspot/SBFspot.cfg
 ```
 
 ### Uninstall / reconfigure

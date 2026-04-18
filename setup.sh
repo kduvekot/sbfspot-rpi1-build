@@ -358,12 +358,6 @@ if [[ ! -f "$UPLOAD_CFG" ]]; then
     chown root:"$RUN_USER" "$UPLOAD_CFG"
 fi
 
-# SBFspot's default lookup is for SBFspot.cfg next to the binary. Symlink
-# /etc/sbfspot/*.cfg into $INSTALL_DIR so plain `SBFspot` works without
-# needing -cfg on every invocation.
-ln -sfn "$CFG" "$INSTALL_DIR/SBFspot.cfg"
-ln -sfn "$UPLOAD_CFG" "$INSTALL_DIR/SBFspotUpload.cfg"
-
 # ---- cron ----------------------------------------------------------------
 if [[ $INSTALL_CRON == 1 ]]; then
     info "Installing $CRON_FILE (runs as $RUN_USER)"
@@ -396,7 +390,7 @@ cat <<EOF
 $([[ $INSTALL_CRON == 1 ]] && echo "  Cron:         $CRON_FILE")
 
 Test now:
-  sudo -u $RUN_USER $INSTALL_DIR/SBFspot -v -finq -nocsv -nosql
+  sudo -u $RUN_USER $INSTALL_DIR/SBFspot -v -finq -nocsv -nosql -cfg$CFG
 
 Review config:
   sudo nano $CFG
