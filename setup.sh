@@ -398,9 +398,20 @@ compute_location_cron() {
         solar_noon = noon_h - lon/15
         sunrise = solar_noon - daylight/2
         sunset  = solar_noon + daylight/2
-        # Safety buffer of 1 hour on each side, rounded outward to whole hours
-        start = int(sunrise - 1);  if (sunrise - 1 < start) start--
-        end   = int(sunset  + 1);  if (sunset  + 1 > end)   end++
+        # Safety buffer of 1 hour on each side.
+        start_h = sunrise - 1
+        end_h   = sunset  + 1
+        # If the daylight window wraps past midnight in the chosen timezone
+        # (e.g. lat/lon far from the system TZ's natural longitude — the
+        # classic "my Pi is in Sydney but TZ=UTC" case) or covers nearly the
+        # whole day, fall back to */5 * * * *. Single-range cron cannot
+        # express a wrapping window cleanly.
+        if (start_h < 0 || end_h > 24 || daylight > 20) {
+            print "*/5 * * * *"; exit
+        }
+        # Round outward to whole hours.
+        start = int(start_h);  if (start_h < start) start--
+        end   = int(end_h);    if (end_h   > end)   end++
         if (start < 0)  start = 0
         if (end > 23)   end = 23
         if (start >= end) { print "*/5 * * * *"; exit }
