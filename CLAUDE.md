@@ -1,101 +1,95 @@
-# sbfspot-rpi-build
+# sbfspot-rpi1-build
 
-## What this repo does
+## What this repo is
 
-Cross-compiles [SBFspot](https://github.com/SBFspot/SBFspot) for Raspberry Pi 1 (ARMv6 armhf)
-using GitHub Actions. SBFspot reads power production data from SMA solar inverters via Bluetooth
-or Speedwire and stores it in SQLite/MySQL/CSV/MQTT.
+A **compile-only** project: cross-compiles [SBFspot](https://github.com/SBFspot/SBFspot)
+for Raspberry Pi 1 / Zero (ARMv6 armhf) and publishes a GitHub Release with the tarball
+plus a `setup.sh` one-liner installer. The SBFspot binary we publish is byte-for-byte
+what upstream's `make sqlite` produces on ARMv6 — we do not patch, fork, or modify
+upstream behaviour. For usage, configuration and troubleshooting, upstream's wiki is
+authoritative: <https://github.com/SBFspot/SBFspot/wiki>.
 
-Official SBFspot releases only provide ARMv7+ (`arm`) and `arm64` binaries.
-The Pi 1 is ARMv6, so it needs a dedicated build. This repo provides that.
+Why this repo exists: upstream only ships ARMv7+ / arm64 binaries. The Pi 1 and Pi Zero
+are ARMv6 (ARM1176JZF-S, VFPv2), so they need a dedicated build.
+
+## Upstream pinning
+
+`.github/workflows/build.yml` pins `SBFSPOT_VERSION=V3.9.12` (upstream tag, released
+2025-02-22). Not `master`, not a branch. To rebuild against a newer upstream release,
+trigger the workflow manually with the new tag as the input.
 
 ## Architecture
 
-### Build approach: debootstrap + QEMU user-mode
+**Build:** `ubuntu-latest` runner → `debootstrap` a Raspbian Trixie armhf rootfs →
+`qemu-arm-static` user-mode chroot into it → `make sqlite` inside. Produces
+armhf/ARMv6/VFPv2 ELF with dynamic linker `/lib/ld-linux-armhf.so.3`. Functionally
+equivalent to pi-gen stage 0 — see README "How it's built" for the full mapping
+and the rationale for not depending on pi-gen directly.
 
-The workflow creates a genuine **Raspbian Trixie armhf** rootfs via `debootstrap`
-on the x86 GitHub Actions runner, then uses `qemu-arm-static` user-mode emulation
-to chroot into it and compile. This produces binaries with the correct ABI
-(armhf, hard-float, ARMv6, `/lib/ld-linux-armhf.so.3`).
+**Why debootstrap + QEMU (vs simpler options):**
+- `debian:trixie --platform linux/arm/v6` falls back to armel (soft-float, wrong ABI).
+- `debian:trixie --platform linux/arm/v7` is ARMv7+; crt0 can contain ARMv7 instructions that crash on ARMv6.
+- `arm32v6/alpine` is musl, not glibc — incompatible with Raspberry Pi OS.
+- No official Raspberry Pi OS Docker image exists.
 
-### Why not simpler approaches
+**Raspbian keyring:** debootstrap needs `raspbian-archive-keyring`, which isn't in
+Ubuntu's repos. The workflow fetches the `.deb` directly from `archive.raspbian.org`
+and installs it before debootstrap runs.
 
-- `debian:trixie --platform linux/arm/v6` → falls back to **armel** (soft-float),
-  wrong ABI. Raspberry Pi OS uses **armhf**.
-- `debian:trixie --platform linux/arm/v7` → standard Debian armhf is ARMv7+.
-  The glibc crt startup code may contain ARMv7 instructions that crash on ARMv6.
-- `arm32v6/alpine` → musl libc, not glibc. Binaries won't run on Raspberry Pi OS
-  unless statically linked.
-- No official Raspberry Pi OS Docker image exists for Trixie.
+**Verification stage:** after build, strips `-dev` packages from the rootfs, installs
+only runtime libs, then checks: ELF class, `Tag_CPU_arch=v6`, `Tag_FP_arch=VFPv2`,
+ldd resolution, `SBFspot -version`, SQLite support flag, schema creation.
 
-### Target platform: Raspberry Pi 1 (all revisions)
-
-- CPU: ARM1176JZF-S — ARMv6 with VFPv2
-- ABI: armhf (hard-float)
-- OS: Raspberry Pi OS Lite 32-bit (Raspbian Trixie / Debian 13)
-- Dynamic linker: `/lib/ld-linux-armhf.so.3`
-- Lib path: `/lib/arm-linux-gnueabihf/`
-- RAM: 256MB (Model A) or 512MB (Model B)
-- Also works on: Pi Zero, Pi Zero W (same ARMv6 SoC)
-
-### SBFspot build variant
-
-- SQLite only (not MySQL/MariaDB) — simplest for single-board setups
-- Bluetooth support enabled (`libbluetooth`)
-- Includes SBFspotUploadDaemon (for optional PVoutput.org uploads)
-
-### Linked libraries at runtime
-
-SBFspot: `pthread`, `bluetooth`, `boost_date_time`, `boost_system`, `sqlite3`
-SBFspotUploadDaemon: `pthread`, `curl`, `sqlite3`
+**Release publishing:** separate job after build. Tag `v<sbfspot-version>-rpi1.<run_number>`
+(e.g. `v3.9.12-rpi1.7`). Pre-release flag set when branch ≠ `main` (tag gets `-dev` suffix).
 
 ## Files
 
-- `.github/workflows/build.yml` — The build + verify + package workflow
-- `install.sh` — Generic installer script for the Pi (run after downloading artifact)
+- `.github/workflows/build.yml` — build + verify + package + release
+- `setup.sh` — one-liner installer (curl-pipeable from raw.githubusercontent.com)
+- `install.sh` — legacy offline installer bundled in the tarball (no service user, no cron)
+- `README.md` — user documentation
+- `CLAUDE.md` — this file
 
-## Key decisions and known issues
+## Deviations from the upstream wiki install
 
-### __USE_TIME_BITS64 warning
-Every compilation unit produces `oslinux.h:45:12: warning: "__USE_TIME_BITS64" redefined`.
-This is an upstream SBFspot issue (fix for #692). Harmless — both definitions enable
-64-bit time, just different syntax. Do not try to fix this in the build workflow.
+All three have reasons; otherwise we stay wiki-exact (install dir, cron cadence,
+archive time, example coords, etc.).
 
-### Verification stage
-After building, the workflow strips -dev packages from the rootfs and verifies binaries
-run with only runtime libs installed. Checks: ELF arch, ABI tags, ldd resolution,
-SBFspot version output, SQLite support flag, database schema creation.
+1. **Dedicated `sbfspot` system user** (wiki uses `pi`). Cleaner uninstall, least
+   privilege. Overridable via `--run-user`.
+2. **`setcap cap_net_raw,cap_net_admin+eip`** (wiki silent). Raw HCI sockets require
+   `CAP_NET_RAW`; the `bluetooth` group alone isn't enough for SMA's custom protocol.
+3. **`/etc/cron.d/sbfspot`** (wiki uses a user crontab). System-level file; uninstall
+   is one `rm`.
 
-### SBFspot is run-once-and-exit
-SBFspot has no daemon/loop mode. It connects to inverters, queries data, writes to
-DB/CSV/MQTT, and exits. Continuous operation comes from cron or a wrapper loop.
-The Docker container's `start.sh` runs it in a `while true` loop with configurable
-`SBFSPOT_INTERVAL` (default 300s, minimum 60s).
+Nothing else changes the binary's behaviour.
 
-### Bluetooth polling limits
-Each SBFspot run does a full BT connect → authenticate → query → disconnect cycle.
-For 2 inverters via Bluetooth, each run takes ~15-30 seconds. Minimum practical
-polling interval is ~60 seconds. Recommended: every 2-5 minutes.
+## Key gotchas
 
-## Development workflow
+**`__USE_TIME_BITS64` redefined** warning on every compile unit. Upstream issue
+(SBFspot fix for #692). Harmless, both macros enable 64-bit time. Do not try to
+"fix" it in the workflow.
 
-1. Edit workflow or install script
-2. Push to trigger build (or use `workflow_dispatch` with version input)
-3. Wait ~15-20 minutes for QEMU-emulated compilation
-4. Download artifact from Actions tab
-5. Test on a real Pi
+**SBFspot is run-once-and-exit.** No daemon loop. Continuous operation comes from
+cron. Each BT run takes ~15-30s for 2 inverters; minimum practical interval is ~60s.
+Upstream recommends 5 minutes (wiki) / 300s (Docker `SBFSPOT_INTERVAL`).
+
+**Tarball-level install.sh is legacy.** Real users curl `setup.sh`; the bundled
+`install.sh` is kept for offline/advanced use only and does not create the service
+user or cron file.
+
+## Development
+
+1. Edit workflow or scripts on a feature branch (currently `claude/...`).
+2. Push → triggers build + pre-release (`-dev` suffix).
+3. Test on the Pi with `--release <tag>`.
+4. Merge to `main` → triggers stable release; `latest` resolves to it.
 
 ## Testing on the Pi
 
 ```bash
-# Verify binary
 /usr/local/bin/sbfspot.3/SBFspot -version
-/usr/local/bin/sbfspot.3/SBFspot -?
-
-# Test with inverter (daytime only unless -finq)
-/usr/local/bin/sbfspot.3/SBFspot -v -finq -nocsv -nosql
-
-# Check ABI
 readelf -A /usr/local/bin/sbfspot.3/SBFspot | grep -E "Tag_CPU|Tag_FP"
-# Should show: Tag_CPU_name: "6", Tag_FP_arch: VFPv2
+sudo -u sbfspot /usr/local/bin/sbfspot.3/SBFspot -v -finq -nocsv -nosql
 ```
