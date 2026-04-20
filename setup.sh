@@ -1,22 +1,23 @@
 #!/usr/bin/env bash
 #
-# setup.sh - one-shot installer for SBFspot on Raspberry Pi 1 (ARMv6 armhf).
+# setup.sh - one-shot installer for the SBFspot ARMv6 armhf build.
 #
-# Downloads the latest release tarball from this repo, installs binaries,
-# creates a dedicated 'sbfspot' system user, templates /etc/sbfspot/SBFspot.cfg
-# from flags or interactive prompts, and optionally installs a crontab.
+# Downloads the latest release tarball from this repo, installs binaries
+# into /usr/local/bin/sbfspot.3/ (matching the upstream SBFspot Linux/SQLite
+# wiki), creates an 'sbfspot' system user, templates SBFspot.cfg from flags
+# or 2-3 interactive prompts, and optionally installs a cron schedule.
 #
-# Usage:
-#   curl -sL https://raw.githubusercontent.com/kduvekot/sbfspot-rpi1-build/main/setup.sh \
-#     | sudo bash -s -- [flags]
+# Upstream: https://github.com/SBFspot/SBFspot
+# Wiki:     https://github.com/SBFspot/SBFspot/wiki/Installation-Linux-SQLite
 #
-# See --help for flags.
+# This script only arranges the install; the SBFspot binary itself is
+# byte-for-byte what upstream's `make sqlite` produces on ARMv6. For
+# configuration, usage and troubleshooting refer to the upstream wiki.
 
 set -euo pipefail
 
 REPO="kduvekot/sbfspot-rpi1-build"
 INSTALL_DIR="/usr/local/bin/sbfspot.3"
-CONFIG_DIR="/etc/sbfspot"
 LOG_DIR="/var/log/sbfspot.3"
 SERVICE_USER="sbfspot"
 SERVICE_HOME="/var/lib/sbfspot"
@@ -40,8 +41,9 @@ TIMEZONE=""
 LOCALE="en-US"
 DECIMAL=""
 PASSWORD="0000"
-CRON_POLL="*/5 * * * *"
-CRON_ARCHIVE="55 23 * * *"
+# Defaults mirror the upstream SBFspot wiki cron recommendation.
+CRON_POLL="*/5 6-22 * * *"
+CRON_ARCHIVE="55 5 * * *"
 
 usage() {
     cat <<EOF
@@ -50,26 +52,27 @@ Usage: sudo bash setup.sh [flags]
 Required (if not using --skeleton, prompted interactively when omitted):
   --inverter <BT-MAC>       Inverter Bluetooth address (repeat for MIS).
                             First one is written as BTAddress (the MIS master).
-  --lat <decimal>           Latitude (e.g. 50.80). Auto-detected via IP geolocation if omitted.
-  --lon <decimal>           Longitude (e.g. 4.33). Auto-detected via IP geolocation if omitted.
+  --lat <decimal>           Latitude, e.g. 50.80. Auto-detected via IP geolocation if omitted.
+  --lon <decimal>           Longitude, e.g. 4.33. Auto-detected via IP geolocation if omitted.
 
 Optional (sensible defaults, silent unless overridden):
-  --run-user <name>         User to own data and run cron. Default: ${SERVICE_USER}.
-  --data-dir <path>         Data + DB directory. Default: \${home-of-run-user}/data
-                            (i.e. ${SERVICE_HOME}/data for the default service user).
+  --run-user <name>         User to own data and run cron. Default: ${SERVICE_USER}
+                            (created as a system user if missing).
+  --data-dir <path>         Data + DB directory. Default: \${home-of-run-user}/smadata
+                            (i.e. ${SERVICE_HOME}/smadata for the default service user).
   --plant-name <str>        Plantname in config. Default: system hostname.
-  --tz <zone>               Timezone, e.g. Europe/Amsterdam. Default: /etc/timezone.
-  --locale <code>           SBFspot locale, e.g. nl-NL. Default: en-US.
+  --tz <zone>               Timezone, e.g. Europe/Brussels. Default: /etc/timezone.
+  --locale <code>           SBFspot locale, e.g. en-US, nl-NL. Default: en-US.
   --decimal <dot|comma>     CSV decimal separator. Default: derived from locale.
   --password <pw>           SMA user password. Default: 0000 (SMA factory default).
 
 Modes:
-  --install-cron            Install /etc/cron.d/sbfspot with upstream defaults
-                            (poll */5 * * * *, archive 55 23 * * *).
+  --install-cron            Install /etc/cron.d/sbfspot with upstream wiki defaults
+                            (poll */5 6-22 * * *, archive 55 5 * * *).
   --cron "<spec>"           Override polling cron. Implies --install-cron.
   --archive-cron "<spec>"   Override archive cron. Implies --install-cron.
   --skeleton                Install binaries only, drop the stock default config
-                            at ${CONFIG_DIR}/SBFspot.cfg unchanged. No prompts.
+                            at ${INSTALL_DIR}/SBFspot.cfg unchanged. No prompts.
   --non-interactive         Never prompt. Error if a required field is missing.
   --no-geoip                Don't call ipapi.co for lat/lon; prompt or require flags.
 
@@ -83,7 +86,7 @@ Examples:
   # Fully non-interactive:
   curl -sL https://raw.githubusercontent.com/${REPO}/main/setup.sh | sudo bash -s -- \\
       --inverter 00:80:25:XX:XX:X1 --inverter 00:80:25:XX:XX:X2 \\
-      --lat 50.80 --lon 4.33 --tz Europe/Amsterdam --locale nl-NL \\
+      --lat 50.80 --lon 4.33 --tz Europe/Brussels \\
       --install-cron --non-interactive
 
   # Binaries only, hand-edit config later:
@@ -129,14 +132,14 @@ case "$ARCH" in
     *) warn "This build targets ARMv6 armhf; running on $ARCH — binaries will not execute." ;;
 esac
 
-# curl and tar should always be there (systemd pulls them in on Pi OS Lite).
 for cmd in curl tar; do
     command -v "$cmd" >/dev/null 2>&1 || die "Missing required command: $cmd."
 done
 
 # Install SBFspot's runtime libs + tools the installer itself needs.
-# Package names are Trixie (Debian 13 / Raspberry Pi OS Lite 12+); the binary
-# was built against these so mismatched releases will get a clear apt error.
+# Package names track Trixie (Debian 13 / Raspberry Pi OS Lite 12+); the
+# binary is built against these so mismatched releases will get a clear
+# apt error rather than a confusing runtime failure.
 APT_PACKAGES=(
     libbluetooth3
     libboost-date-time1.83.0
@@ -156,7 +159,6 @@ for cmd in sqlite3 setcap useradd; do
 done
 
 prompt() {
-    # prompt "question" "default" -> echoes answer
     local q="$1" def="${2:-}" ans
     if [[ $NON_INTERACTIVE == 1 ]]; then
         [[ -n "$def" ]] && { echo "$def"; return; }
@@ -170,7 +172,7 @@ prompt() {
     echo "${ans:-$def}"
 }
 
-# ---- download latest release --------------------------------------------
+# ---- download release ----------------------------------------------------
 info "Fetching release metadata..."
 if [[ -z "$RELEASE" ]]; then
     API_URL="https://api.github.com/repos/${REPO}/releases/latest"
@@ -191,9 +193,7 @@ PKG_DIR="$(find "$TMPDIR" -maxdepth 1 -type d -name 'sbfspot-*' | head -1)"
 [[ -d "$PKG_DIR" ]] || die "Unexpected tarball layout — no sbfspot-* directory."
 
 # ---- service user --------------------------------------------------------
-if [[ -z "$RUN_USER" ]]; then
-    RUN_USER="$SERVICE_USER"
-fi
+[[ -n "$RUN_USER" ]] || RUN_USER="$SERVICE_USER"
 if [[ "$RUN_USER" == "$SERVICE_USER" ]]; then
     if ! id "$SERVICE_USER" &>/dev/null; then
         info "Creating system user '$SERVICE_USER' (home $SERVICE_HOME)"
@@ -210,26 +210,23 @@ if getent group bluetooth >/dev/null; then
     usermod -a -G bluetooth "$RUN_USER" || true
 fi
 
-if [[ -z "$DATA_DIR" ]]; then
-    if [[ "$RUN_USER" == "$SERVICE_USER" ]]; then
-        DATA_DIR="$RUN_HOME/data"
-    else
-        DATA_DIR="$RUN_HOME/smadata"
-    fi
-fi
+[[ -n "$DATA_DIR" ]] || DATA_DIR="$RUN_HOME/smadata"
 
 # ---- install files -------------------------------------------------------
 info "Installing binaries to $INSTALL_DIR"
-install -d -m 755 "$INSTALL_DIR" "$CONFIG_DIR" "$LOG_DIR" "$DATA_DIR"
-install -m 755 "$PKG_DIR/SBFspot" "$INSTALL_DIR/SBFspot"
-install -m 755 "$PKG_DIR/SBFspotUploadDaemon" "$INSTALL_DIR/SBFspotUploadDaemon"
-install -m 644 "$PKG_DIR"/TagList*.txt "$INSTALL_DIR/"
+install -d -m 755 "$INSTALL_DIR" "$LOG_DIR" "$DATA_DIR"
+install -m 755 "$PKG_DIR/SBFspot"              "$INSTALL_DIR/SBFspot"
+install -m 755 "$PKG_DIR/SBFspotUploadDaemon"  "$INSTALL_DIR/SBFspotUploadDaemon"
+install -m 644 "$PKG_DIR"/TagList*.txt         "$INSTALL_DIR/"
 install -m 644 "$PKG_DIR/date_time_zonespec.csv" "$INSTALL_DIR/"
-install -m 644 "$PKG_DIR/CreateSQLiteDB.sql" "$INSTALL_DIR/"
-install -m 644 "$PKG_DIR/SBFspot.default.cfg" "$CONFIG_DIR/SBFspot.default.cfg"
-install -m 644 "$PKG_DIR/SBFspotUpload.default.cfg" "$CONFIG_DIR/SBFspotUpload.default.cfg"
+install -m 644 "$PKG_DIR/CreateSQLiteDB.sql"   "$INSTALL_DIR/"
+install -m 644 "$PKG_DIR/SBFspot.default.cfg"  "$INSTALL_DIR/SBFspot.default.cfg"
+install -m 644 "$PKG_DIR/SBFspotUpload.default.cfg" "$INSTALL_DIR/SBFspotUpload.default.cfg"
 
-info "Granting CAP_NET_RAW / CAP_NET_ADMIN on SBFspot (for raw HCI access without root)"
+# Raw HCI socket access (for SMA's custom Bluetooth protocol) requires
+# CAP_NET_RAW; the 'bluetooth' group alone isn't enough. Silent on the
+# upstream wiki, but needed for any non-root run.
+info "Granting CAP_NET_RAW / CAP_NET_ADMIN on SBFspot"
 setcap cap_net_raw,cap_net_admin+eip "$INSTALL_DIR/SBFspot"
 
 DB_FILE="$DATA_DIR/SBFspot.db"
@@ -241,17 +238,19 @@ fi
 chown -R "$RUN_USER:$RUN_USER" "$DATA_DIR" "$LOG_DIR"
 
 # ---- config file ---------------------------------------------------------
-CFG="$CONFIG_DIR/SBFspot.cfg"
-UPLOAD_CFG="$CONFIG_DIR/SBFspotUpload.cfg"
+# Upstream wiki keeps SBFspot.cfg alongside the binary; SBFspot's default
+# lookup is $INSTALL_DIR/SBFspot.cfg, so no -cfg flag is needed in cron.
+CFG="$INSTALL_DIR/SBFspot.cfg"
+UPLOAD_CFG="$INSTALL_DIR/SBFspotUpload.cfg"
 
 if [[ $SKELETON == 1 ]]; then
     if [[ -f "$CFG" ]]; then
         info "Config exists at $CFG — leaving unchanged."
     else
         info "Skeleton mode — copying default config to $CFG (unmodified)"
-        install -m 640 "$CONFIG_DIR/SBFspot.default.cfg" "$CFG"
+        install -m 640 "$INSTALL_DIR/SBFspot.default.cfg" "$CFG"
     fi
-    [[ -f "$UPLOAD_CFG" ]] || install -m 640 "$CONFIG_DIR/SBFspotUpload.default.cfg" "$UPLOAD_CFG"
+    [[ -f "$UPLOAD_CFG" ]] || install -m 640 "$INSTALL_DIR/SBFspotUpload.default.cfg" "$UPLOAD_CFG"
     chown root:"$RUN_USER" "$CFG" "$UPLOAD_CFG"
     echo
     info "Skeleton install complete. Edit $CFG to set BTAddress, Latitude, Longitude, etc."
@@ -259,9 +258,8 @@ if [[ $SKELETON == 1 ]]; then
 fi
 
 if [[ -f "$CFG" ]]; then
-    info "Existing $CFG found — not overwriting. Use --skeleton if you want the default template."
+    info "Existing $CFG found — not overwriting. Use --skeleton or delete it first."
 else
-    # collect required values
     if [[ ${#INVERTERS[@]} -eq 0 ]]; then
         while :; do
             mac="$(prompt "Inverter Bluetooth MAC (blank to finish)" "")"
@@ -271,8 +269,7 @@ else
         [[ ${#INVERTERS[@]} -gt 0 ]] || die "At least one --inverter required."
     fi
     for mac in "${INVERTERS[@]}"; do
-        [[ "$mac" =~ ^[0-9A-Fa-f]{2}(:[0-9A-Fa-f]{2}){5}$ ]] \
-            || die "Not a valid BT MAC: $mac"
+        [[ "$mac" =~ ^[0-9A-Fa-f]{2}(:[0-9A-Fa-f]{2}){5}$ ]] || die "Not a valid BT MAC: $mac"
     done
 
     if [[ -z "$LAT" || -z "$LON" ]]; then
@@ -280,10 +277,10 @@ else
         if [[ $NO_GEOIP == 0 ]]; then
             info "Fetching approximate location from $GEOIP_URL (IP-based)"
             geo_json="$(curl -sfL "$GEOIP_URL" 2>/dev/null || true)"
-            geo_lat="$(echo "$geo_json" | grep -oE '"latitude":\s*[-0-9.]+' | head -1 | grep -oE '[-0-9.]+$' || true)"
-            geo_lon="$(echo "$geo_json" | grep -oE '"longitude":\s*[-0-9.]+' | head -1 | grep -oE '[-0-9.]+$' || true)"
-            geo_city="$(echo "$geo_json" | grep -oE '"city":\s*"[^"]*"' | head -1 | cut -d'"' -f4)"
-            geo_tz="$(echo "$geo_json" | grep -oE '"timezone":\s*"[^"]*"' | head -1 | cut -d'"' -f4)"
+            geo_lat="$(echo "$geo_json"  | grep -oE '"latitude":\s*[-0-9.]+'  | head -1 | grep -oE '[-0-9.]+$' || true)"
+            geo_lon="$(echo "$geo_json"  | grep -oE '"longitude":\s*[-0-9.]+' | head -1 | grep -oE '[-0-9.]+$' || true)"
+            geo_city="$(echo "$geo_json" | grep -oE '"city":\s*"[^"]*"'       | head -1 | cut -d'"' -f4)"
+            geo_tz="$(echo "$geo_json"   | grep -oE '"timezone":\s*"[^"]*"'   | head -1 | cut -d'"' -f4)"
         fi
         if [[ -n "$geo_lat" && -n "$geo_lon" ]]; then
             info "ipapi.co says: ${geo_city:-?} @ ($geo_lat, $geo_lon) — tz=${geo_tz:-?}"
@@ -302,7 +299,7 @@ else
 
     if [[ -z "$TIMEZONE" ]]; then
         [[ -r /etc/timezone ]] && TIMEZONE="$(tr -d '[:space:]' </etc/timezone || true)"
-        [[ -z "$TIMEZONE" ]] && TIMEZONE="$(prompt "Timezone (e.g. Europe/Amsterdam)" "Europe/Amsterdam")"
+        [[ -z "$TIMEZONE" ]] && TIMEZONE="$(prompt "Timezone (e.g. Europe/Brussels)" "Europe/Brussels")"
     fi
 
     [[ -n "$PLANT_NAME" ]] || PLANT_NAME="$(hostname -s 2>/dev/null || echo MyPlant)"
@@ -310,7 +307,7 @@ else
     if [[ -z "$DECIMAL" ]]; then
         case "$LOCALE" in
             nl-*|de-*|fr-*|es-*|it-*|pt-*) DECIMAL="comma";;
-            *) DECIMAL="point";;
+            *)                             DECIMAL="point";;
         esac
     fi
 
@@ -318,14 +315,10 @@ else
     [[ ${#INVERTERS[@]} -gt 1 ]] && MIS=1
 
     info "Writing $CFG"
-    # Start from upstream default, then substitute. sed line edits keep
-    # comments and structure intact.
-    cp "$CONFIG_DIR/SBFspot.default.cfg" "$CFG"
+    cp "$INSTALL_DIR/SBFspot.default.cfg" "$CFG"
 
     set_key() {
-        local key="$1" val="$2"
-        # Escape & and / and | in val for sed
-        local esc
+        local key="$1" val="$2" esc
         esc=$(printf '%s' "$val" | sed -e 's/[&|/]/\\&/g')
         if grep -qE "^${key}=" "$CFG"; then
             sed -i -E "s|^${key}=.*|${key}=${esc}|" "$CFG"
@@ -354,21 +347,21 @@ else
 fi
 
 if [[ ! -f "$UPLOAD_CFG" ]]; then
-    install -m 640 "$CONFIG_DIR/SBFspotUpload.default.cfg" "$UPLOAD_CFG"
+    install -m 640 "$INSTALL_DIR/SBFspotUpload.default.cfg" "$UPLOAD_CFG"
     chown root:"$RUN_USER" "$UPLOAD_CFG"
 fi
 
 # ---- cron ----------------------------------------------------------------
 if [[ $INSTALL_CRON == 1 ]]; then
     info "Installing $CRON_FILE (runs as $RUN_USER)"
-    SBF="$INSTALL_DIR/SBFspot -q -cfg$CFG"
+    SBF="$INSTALL_DIR/SBFspot -q"
     cat > "$CRON_FILE" <<EOF
 # SBFspot cron — installed by setup.sh
-# See https://github.com/${REPO}
+# See https://github.com/${REPO} and the upstream SBFspot wiki.
 SHELL=/bin/bash
 PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
 
-# Regular polling — SBFspot internally gates on Latitude/Longitude + SunRSOffset.
+# Regular polling; SBFspot internally gates on Latitude/Longitude + SunRSOffset.
 ${CRON_POLL} ${RUN_USER} timeout --foreground 180 ${SBF} -ad0 -am0 -ae0 >/dev/null 2>&1
 
 # Daily archive
@@ -390,8 +383,11 @@ cat <<EOF
 $([[ $INSTALL_CRON == 1 ]] && echo "  Cron:         $CRON_FILE")
 
 Test now:
-  sudo -u $RUN_USER $INSTALL_DIR/SBFspot -v -finq -nocsv -nosql -cfg$CFG
+  sudo -u $RUN_USER $INSTALL_DIR/SBFspot -v -finq -nocsv -nosql
 
 Review config:
   sudo nano $CFG
+
+Upstream docs for everything beyond install:
+  https://github.com/SBFspot/SBFspot/wiki
 EOF
