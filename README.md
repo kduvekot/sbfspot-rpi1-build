@@ -80,14 +80,30 @@ Drops the unmodified upstream `SBFspot.default.cfg` at `/usr/local/bin/sbfspot.3
 | `--plant-name <str>` | hostname | |
 | `--decimal dot\|comma` | from locale | CSV decimal separator. |
 | `--password <pw>` | `0000` | SMA factory default. |
-| `--install-cron` | off | Installs `/etc/cron.d/sbfspot`. |
-| `--cron <spec>` | `*/5 6-22 * * *` | Matches upstream wiki. |
+| `--install-cron` | off | Installs `/etc/cron.d/sbfspot`; polling schedule taken from `--cron-profile`. |
+| `--cron-profile <name>` | `location` | `upstream` / `location` / `24x7` / `custom`. See below. |
+| `--cron <spec>` | _(profile-derived)_ | Explicit polling cron expression. Implies `--cron-profile=custom`. |
 | `--archive-cron <spec>` | `55 5 * * *` | Matches upstream wiki. |
 | `--skeleton` | off | Stock config, no prompts. |
 | `--non-interactive` | off | Error if a required field is missing. |
 | `--no-geoip` | off | Skip the ipapi.co call entirely. |
 
 Run `setup.sh --help` for the full list.
+
+### Cron profiles
+
+SBFspot internally gates polling on `Latitude`/`Longitude` + `SunRSOffset` (see the [upstream wiki](https://github.com/SBFspot/SBFspot/wiki)), so the cron's time window only controls how often we *try* — it never actually polls outside sunrise–sunset. Widening the window has no practical cost (~50ms per no-op run); narrowing it too far risks missing data at the seasonal edges.
+
+| Profile | Expression | Behaviour |
+|---|---|---|
+| `upstream` | `*/5 6-22 * * *` | Upstream wiki default. Misses ~45 min of morning data on the summer solstice at latitudes ≥ ~49°N. |
+| `location` *(default)* | computed from your lat/lon | Covers the longest day of the year (solstice) with a 1-hour buffer each side. **Our recommended default.** |
+| `24x7` | `*/5 * * * *` | Lightest logic; SBFspot's own gate is the only authority. |
+| `custom` | via `--cron <spec>` | Whatever you pass. |
+
+The `location` profile uses only `awk` + `date` — no external service. It solves the standard solar-geometry formula for hour-angle at the summer solstice (Dec 21 in the southern hemisphere), converts to local wall-clock time via the user's timezone, and rounds outward to whole hours. Arctic/Antarctic latitudes (midnight sun / polar night) automatically fall back to `*/5 * * * *`.
+
+In interactive mode `--install-cron` alone prompts with the four profiles above, showing the live computed `location` expression for your coordinates as the default selection.
 
 ### Test after install
 
@@ -105,13 +121,14 @@ This forces a Bluetooth handshake (`-finq` bypasses the daylight gate), prints e
 
 ## Deviations from the upstream wiki install
 
-We follow the [upstream Linux/SQLite wiki](https://github.com/SBFspot/SBFspot/wiki/Installation-Linux-SQLite) for install dir, config location, cron cadence and everything in the config itself. Three deliberate deviations:
+We follow the [upstream Linux/SQLite wiki](https://github.com/SBFspot/SBFspot/wiki/Installation-Linux-SQLite) for install dir, config location, archive time, and everything in the config itself. Four deliberate deviations:
 
 1. **Dedicated `sbfspot` system user** instead of running as `pi`. Least privilege, clean uninstall, overridable with `--run-user`.
 2. **`setcap cap_net_raw,cap_net_admin+eip` on the binary.** Raw HCI sockets (needed for SMA's custom Bluetooth protocol) require `CAP_NET_RAW`; the `bluetooth` group alone isn't enough. The wiki is silent on this; our choice makes non-root operation actually work.
 3. **System-level `/etc/cron.d/sbfspot`** instead of the wiki's user crontab. Uninstall is one `rm`; no per-user state.
+4. **Location-optimised cron window by default** (`--cron-profile location`) instead of the wiki's fixed `*/5 6-22 * * *`. The wiki default misses ~45 minutes of morning data on the summer solstice at its own example latitude (Ukkel, 50.8°N) and more at higher latitudes. Pass `--cron-profile upstream` to restore the wiki-exact window.
 
-Everything else — install directory, config file next to binary, cron window, archive time, flag usage — matches the wiki.
+Everything else — install directory, config file next to binary, archive time, flag usage — matches the wiki.
 
 ## How it's built
 
