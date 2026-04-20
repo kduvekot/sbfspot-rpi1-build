@@ -402,10 +402,9 @@ compute_location_cron() {
         start_h = sunrise - 1
         end_h   = sunset  + 1
         # If the daylight window wraps past midnight in the chosen timezone
-        # (e.g. lat/lon far from the system TZ's natural longitude — the
-        # classic "my Pi is in Sydney but TZ=UTC" case) or covers nearly the
-        # whole day, fall back to */5 * * * *. Single-range cron cannot
-        # express a wrapping window cleanly.
+        # (lat/lon far from the system TZ's natural longitude) or covers
+        # nearly the whole day, fall back to */5 * * * *. Single-range cron
+        # cannot express a wrapping window cleanly.
         if (start_h < 0 || end_h > 24 || daylight > 20) {
             print "*/5 * * * *"; exit
         }
@@ -427,11 +426,15 @@ if [[ $INSTALL_CRON == 1 ]]; then
             CRON_PROFILE="location"
         else
             loc_preview="$(compute_location_cron "$LAT" "$LON" "$TIMEZONE")"
+            loc_note=""
+            if [[ "$loc_preview" == "*/5 * * * *" ]]; then
+                loc_note="  — same as option 3; your daylight window wraps past midnight in TZ=$TIMEZONE"
+            fi
             echo
             echo "Cron schedule — SBFspot internally gates on Latitude/Longitude + SunRSOffset,"
             echo "so the window below only affects how often we *try*. Pick one:"
             echo "  1) Upstream default       */5 6-22 * * *  (matches wiki; may miss summer mornings north of ~49°N)"
-            echo "  2) Location-optimized     ${loc_preview}  (recommended — computed from your lat/lon)"
+            echo "  2) Location-optimized     ${loc_preview}${loc_note}"
             echo "  3) 24/7                   */5 * * * *     (lightest logic)"
             echo "  4) Custom                 (you type a cron expression)"
             choice="$(prompt "Choice" "2")"
@@ -448,7 +451,16 @@ if [[ $INSTALL_CRON == 1 ]]; then
 
     case "$CRON_PROFILE" in
         upstream) CRON_POLL="*/5 6-22 * * *";;
-        location) CRON_POLL="$(compute_location_cron "$LAT" "$LON" "$TIMEZONE")";;
+        location)
+            CRON_POLL="$(compute_location_cron "$LAT" "$LON" "$TIMEZONE")"
+            if [[ "$CRON_POLL" == "*/5 * * * *" ]]; then
+                warn "Location profile fell back to */5 * * * * because the daylight window at"
+                warn "lat=$LAT lon=$LON wraps past midnight in TZ=$TIMEZONE (or it's an Arctic"
+                warn "latitude). Functionally fine — SBFspot's sunrise/sunset gate still limits"
+                warn "actual polling — but if you want a tighter cron, set --tz to a zone that"
+                warn "matches your longitude, or pass --cron-profile upstream."
+            fi
+            ;;
         24x7)     CRON_POLL="*/5 * * * *";;
         custom)   [[ -n "$CRON_POLL" ]] || die "--cron-profile=custom requires --cron <spec>.";;
         *)        die "Invalid --cron-profile: $CRON_PROFILE (upstream|location|24x7|custom)";;
