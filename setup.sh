@@ -402,7 +402,7 @@ compute_location_cron() {
         start_h = sunrise - 1
         end_h   = sunset  + 1
         # If the daylight window wraps past midnight in the chosen timezone
-        # (lat/lon far from the system TZ's natural longitude) or covers
+        # (lat/lon far from the natural longitude of the chosen TZ) or covers
         # nearly the whole day, fall back to */5 * * * *. Single-range cron
         # cannot express a wrapping window cleanly.
         if (start_h < 0 || end_h > 24 || daylight > 20) {
