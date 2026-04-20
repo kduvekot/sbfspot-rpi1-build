@@ -42,8 +42,9 @@ LOCALE="en-US"
 DECIMAL=""
 PASSWORD="0000"
 # Defaults mirror the upstream SBFspot wiki cron recommendation.
-CRON_POLL="*/5 6-22 * * *"
+CRON_POLL=""            # resolved from profile below; empty = not explicitly set
 CRON_ARCHIVE="55 5 * * *"
+CRON_PROFILE=""         # upstream | location | 24x7 | custom (set by flags or prompt)
 
 usage() {
     cat <<EOF
@@ -67,10 +68,17 @@ Optional (sensible defaults, silent unless overridden):
   --password <pw>           SMA user password. Default: 0000 (SMA factory default).
 
 Modes:
-  --install-cron            Install /etc/cron.d/sbfspot with upstream wiki defaults
-                            (poll */5 6-22 * * *, archive 55 5 * * *).
-  --cron "<spec>"           Override polling cron. Implies --install-cron.
-  --archive-cron "<spec>"   Override archive cron. Implies --install-cron.
+  --install-cron            Install /etc/cron.d/sbfspot. Schedule is picked from
+                            --cron-profile (or prompted interactively if omitted).
+  --cron-profile <name>     Pick a polling-schedule preset. Implies --install-cron.
+                            upstream  - */5 6-22 * * *  (matches SBFspot wiki)
+                            location  - computed from lat/lon to cover the summer
+                                        solstice with a 1-hour buffer on each side
+                                        (this is our recommended default)
+                            24x7      - */5 * * * *  (SBFspot's internal gate decides)
+                            custom    - requires --cron <spec>
+  --cron "<spec>"           Override polling cron (implies --cron-profile custom).
+  --archive-cron "<spec>"   Override archive cron (default: 55 5 * * *).
   --skeleton                Install binaries only, drop the stock default config
                             at ${INSTALL_DIR}/SBFspot.cfg unchanged. No prompts.
   --non-interactive         Never prompt. Error if a required field is missing.
@@ -113,7 +121,8 @@ while [[ $# -gt 0 ]]; do
         --decimal)         DECIMAL="$2"; shift 2;;
         --password)        PASSWORD="$2"; shift 2;;
         --install-cron)    INSTALL_CRON=1; shift;;
-        --cron)            CRON_POLL="$2"; INSTALL_CRON=1; shift 2;;
+        --cron-profile)    CRON_PROFILE="$2"; INSTALL_CRON=1; shift 2;;
+        --cron)            CRON_POLL="$2"; CRON_PROFILE="custom"; INSTALL_CRON=1; shift 2;;
         --archive-cron)    CRON_ARCHIVE="$2"; INSTALL_CRON=1; shift 2;;
         --skeleton)        SKELETON=1; NON_INTERACTIVE=1; shift;;
         --non-interactive) NON_INTERACTIVE=1; shift;;
@@ -351,13 +360,95 @@ if [[ ! -f "$UPLOAD_CFG" ]]; then
     chown root:"$RUN_USER" "$UPLOAD_CFG"
 fi
 
+# ---- cron profile resolution --------------------------------------------
+# Computes a cron polling window that covers sunrise-to-sunset on the summer
+# solstice (the longest day of the year) for the given lat/lon/tz, plus a
+# 1-hour safety buffer each side. Prints a cron spec like "*/5 4-23 * * *".
+# Falls back to "*/5 * * * *" if lat is inside an Arctic circle.
+compute_location_cron() {
+    local lat="$1" lon="$2" tz="$3"
+    local year solstice
+    year=$(date +%Y)
+    if awk -v lat="$lat" 'BEGIN{exit !(lat+0 >= 0)}'; then
+        solstice="${year}-06-21"      # Northern hemisphere longest day
+    else
+        solstice="${year}-12-21"      # Southern hemisphere longest day
+    fi
+
+    # UTC noon on the solstice -> local wall-clock hour (handles TZ + DST).
+    local noon_local_h
+    noon_local_h=$(TZ="$tz" date -d "${solstice}T12:00:00Z" +%H:%M 2>/dev/null \
+        | awk -F: '{printf "%.4f\n", $1 + $2/60}')
+    [[ -n "$noon_local_h" ]] || { echo "*/5 4-23 * * *"; return; }
+
+    # Compute daylight length + cron hour range via awk (all floating-point
+    # math done once, in a single invocation).
+    awk -v lat="$lat" -v lon="$lon" -v noon_h="$noon_local_h" 'BEGIN {
+        PI = 3.14159265358979323846
+        d2r = PI/180
+        decl = 23.44 * d2r                       # solstice declination (rad)
+        al = (lat < 0 ? -lat : lat) * d2r        # |latitude| in rad
+        # cos(H) = -tan(al) * tan(decl), clamp to avoid acos domain error
+        c = -sin(al)/cos(al) * sin(decl)/cos(decl)
+        if (c >= 1)  { print  "*/5 * * * *"; exit }     # polar night
+        if (c <= -1) { print  "*/5 * * * *"; exit }     # midnight sun
+        H_rad = atan2(sqrt(1-c*c), c)            # acos(c) via atan2
+        daylight = 2 * H_rad / d2r / 15          # hours of daylight
+        # Solar noon in local wall-clock time: local time of 12Z - longitude/15
+        solar_noon = noon_h - lon/15
+        sunrise = solar_noon - daylight/2
+        sunset  = solar_noon + daylight/2
+        # Safety buffer of 1 hour on each side, rounded outward to whole hours
+        start = int(sunrise - 1);  if (sunrise - 1 < start) start--
+        end   = int(sunset  + 1);  if (sunset  + 1 > end)   end++
+        if (start < 0)  start = 0
+        if (end > 23)   end = 23
+        if (start >= end) { print "*/5 * * * *"; exit }
+        printf "*/5 %d-%d * * *\n", start, end
+    }'
+}
+
 # ---- cron ----------------------------------------------------------------
 if [[ $INSTALL_CRON == 1 ]]; then
-    info "Installing $CRON_FILE (runs as $RUN_USER)"
+    # Resolve the profile (interactive prompt if nothing set).
+    if [[ -z "$CRON_PROFILE" ]]; then
+        if [[ $NON_INTERACTIVE == 1 ]]; then
+            CRON_PROFILE="location"
+        else
+            loc_preview="$(compute_location_cron "$LAT" "$LON" "$TIMEZONE")"
+            echo
+            echo "Cron schedule — SBFspot internally gates on Latitude/Longitude + SunRSOffset,"
+            echo "so the window below only affects how often we *try*. Pick one:"
+            echo "  1) Upstream default       */5 6-22 * * *  (matches wiki; may miss summer mornings north of ~49°N)"
+            echo "  2) Location-optimized     ${loc_preview}  (recommended — computed from your lat/lon)"
+            echo "  3) 24/7                   */5 * * * *     (lightest logic)"
+            echo "  4) Custom                 (you type a cron expression)"
+            choice="$(prompt "Choice" "2")"
+            case "$choice" in
+                1) CRON_PROFILE="upstream";;
+                2|"") CRON_PROFILE="location";;
+                3) CRON_PROFILE="24x7";;
+                4) CRON_PROFILE="custom"
+                   CRON_POLL="$(prompt "Cron expression for polling" "*/5 6-22 * * *")";;
+                *) die "Invalid choice: $choice";;
+            esac
+        fi
+    fi
+
+    case "$CRON_PROFILE" in
+        upstream) CRON_POLL="*/5 6-22 * * *";;
+        location) CRON_POLL="$(compute_location_cron "$LAT" "$LON" "$TIMEZONE")";;
+        24x7)     CRON_POLL="*/5 * * * *";;
+        custom)   [[ -n "$CRON_POLL" ]] || die "--cron-profile=custom requires --cron <spec>.";;
+        *)        die "Invalid --cron-profile: $CRON_PROFILE (upstream|location|24x7|custom)";;
+    esac
+
+    info "Installing $CRON_FILE (runs as $RUN_USER, profile=$CRON_PROFILE)"
     SBF="$INSTALL_DIR/SBFspot -q"
     cat > "$CRON_FILE" <<EOF
 # SBFspot cron — installed by setup.sh
 # See https://github.com/${REPO} and the upstream SBFspot wiki.
+# Profile: $CRON_PROFILE
 SHELL=/bin/bash
 PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
 

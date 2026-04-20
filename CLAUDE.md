@@ -53,8 +53,8 @@ ldd resolution, `SBFspot -version`, SQLite support flag, schema creation.
 
 ## Deviations from the upstream wiki install
 
-All three have reasons; otherwise we stay wiki-exact (install dir, cron cadence,
-archive time, example coords, etc.).
+All four have reasons; otherwise we stay wiki-exact (install dir, config
+location, archive time, example coords, etc.).
 
 1. **Dedicated `sbfspot` system user** (wiki uses `pi`). Cleaner uninstall, least
    privilege. Overridable via `--run-user`.
@@ -62,6 +62,10 @@ archive time, example coords, etc.).
    `CAP_NET_RAW`; the `bluetooth` group alone isn't enough for SMA's custom protocol.
 3. **`/etc/cron.d/sbfspot`** (wiki uses a user crontab). System-level file; uninstall
    is one `rm`.
+4. **Location-optimised cron window** (wiki fixes `*/5 6-22 * * *`, which misses
+   ~45 min of morning data at Ukkel/50.8°N on the summer solstice). Default profile
+   is `location` — solar-geometry formula in awk, no external service. `upstream`,
+   `24x7`, and `custom` profiles available via `--cron-profile`.
 
 Nothing else changes the binary's behaviour.
 
