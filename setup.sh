@@ -412,9 +412,12 @@ compute_location_cron() {
         if (start_h < 0 || end_h > 24) {
             print "*/5 * * * *"; print "midnight-cross"; exit
         }
-        # Round outward to whole hours.
-        start = int(start_h);  if (start_h < start) start--
-        end   = int(end_h);    if (end_h   > end)   end++
+        # Truncate to whole hours. No round-up needed: cron ranges are inclusive
+        # and each hour already fires through :55, so "end = int(end_h)" gives
+        # us up to 55 minutes of implicit tail-slack past the integer hour,
+        # which is more than enough on top of the 1h explicit buffer above.
+        start = int(start_h)
+        end   = int(end_h)
         if (start < 0)  start = 0
         if (end > 23)   end = 23
         if (start >= end) { print "*/5 * * * *"; print "midnight-cross"; exit }
