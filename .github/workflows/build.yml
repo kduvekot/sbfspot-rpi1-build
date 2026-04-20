@@ -6,9 +6,11 @@ on:
       - main
       - 'claude/**'
     paths:
+      # setup.sh is deliberately NOT in this list: it's curled directly from
+      # raw.githubusercontent.com at install time, never bundled into the
+      # release tarball, so setup.sh-only changes don't need a rebuild.
       - '.github/workflows/build.yml'
       - 'install.sh'
-      - 'setup.sh'
   workflow_dispatch:
     inputs:
       sbfspot_version:
