@@ -183,4 +183,6 @@ sudo bash install.sh
 
 ## License
 
-The build infrastructure in this repo (workflow, `setup.sh`, `install.sh`) is provided as-is. SBFspot itself is licensed under [CC BY-NC-SA 3.0](https://github.com/SBFspot/SBFspot/blob/master/license.md).
+This repository — the build workflow, `setup.sh`, `install.sh`, documentation, and the binaries it produces — is licensed under **Creative Commons Attribution-NonCommercial-ShareAlike 3.0 Unported (CC BY-NC-SA 3.0)**, the same license SBFspot itself uses. See [`LICENSE`](LICENSE) for the full text or the canonical upstream version at <https://github.com/SBFspot/SBFspot/blob/master/license.md>.
+
+The binaries we publish are derived from the SBFspot source by SBF (https://github.com/SBFspot/SBFspot). All credit for the software itself belongs to upstream; this repo only adds an ARMv6 cross-compile pipeline and an installer.
