@@ -382,18 +382,23 @@ compute_location_cron() {
     [[ -n "$noon_local_h" ]] || { echo "*/5 4-23 * * *"; return; }
 
     # Compute daylight length + cron hour range via awk (all floating-point
-    # math done once, in a single invocation).
+    # math done once, in a single invocation). Emits two lines: the cron spec,
+    # then a reason code ("", "arctic", "midnight-cross") so the caller can
+    # print a targeted warning when the fallback triggers.
     awk -v lat="$lat" -v lon="$lon" -v noon_h="$noon_local_h" 'BEGIN {
         PI = 3.14159265358979323846
         d2r = PI/180
         decl = 23.44 * d2r                       # solstice declination (rad)
         al = (lat < 0 ? -lat : lat) * d2r        # |latitude| in rad
-        # cos(H) = -tan(al) * tan(decl), clamp to avoid acos domain error
+        # cos(H) = -tan(al) * tan(decl); |c|>=1 means 24h daylight (midnight sun)
+        # or 24h night (polar night). Either way, a daylight-sized cron range
+        # is meaningless — use 24/7 and let SBFspot decide.
         c = -sin(al)/cos(al) * sin(decl)/cos(decl)
-        if (c >= 1)  { print  "*/5 * * * *"; exit }     # polar night
-        if (c <= -1) { print  "*/5 * * * *"; exit }     # midnight sun
+        if (c >= 1 || c <= -1) { print "*/5 * * * *"; print "arctic"; exit }
         H_rad = atan2(sqrt(1-c*c), c)            # acos(c) via atan2
         daylight = 2 * H_rad / d2r / 15          # hours of daylight
+        # Near-arctic: 20+ hours of daylight, not quite midnight sun.
+        if (daylight > 20) { print "*/5 * * * *"; print "arctic"; exit }
         # Solar noon in local wall-clock time: local time of 12Z - longitude/15
         solar_noon = noon_h - lon/15
         sunrise = solar_noon - daylight/2
@@ -402,19 +407,19 @@ compute_location_cron() {
         start_h = sunrise - 1
         end_h   = sunset  + 1
         # If the daylight window wraps past midnight in the chosen timezone
-        # (lat/lon far from the natural longitude of the chosen TZ) or covers
-        # nearly the whole day, fall back to */5 * * * *. Single-range cron
-        # cannot express a wrapping window cleanly.
-        if (start_h < 0 || end_h > 24 || daylight > 20) {
-            print "*/5 * * * *"; exit
+        # (lat/lon far from the natural longitude of the chosen TZ) a single-
+        # range cron cannot express it. Fall back to 24/7.
+        if (start_h < 0 || end_h > 24) {
+            print "*/5 * * * *"; print "midnight-cross"; exit
         }
         # Round outward to whole hours.
         start = int(start_h);  if (start_h < start) start--
         end   = int(end_h);    if (end_h   > end)   end++
         if (start < 0)  start = 0
         if (end > 23)   end = 23
-        if (start >= end) { print "*/5 * * * *"; exit }
+        if (start >= end) { print "*/5 * * * *"; print "midnight-cross"; exit }
         printf "*/5 %d-%d * * *\n", start, end
+        print ""   # empty reason line for the "normal" case
     }'
 }
 
@@ -425,11 +430,12 @@ if [[ $INSTALL_CRON == 1 ]]; then
         if [[ $NON_INTERACTIVE == 1 ]]; then
             CRON_PROFILE="location"
         else
-            loc_preview="$(compute_location_cron "$LAT" "$LON" "$TIMEZONE")"
+            { read -r loc_preview; read -r loc_reason; } < <(compute_location_cron "$LAT" "$LON" "$TIMEZONE")
             loc_note=""
-            if [[ "$loc_preview" == "*/5 * * * *" ]]; then
-                loc_note="  — same as option 3; your daylight window wraps past midnight in TZ=$TIMEZONE"
-            fi
+            case "$loc_reason" in
+                arctic)         loc_note="  — same as option 3; your latitude (${LAT}°) has 20+ h of daylight on the solstice";;
+                midnight-cross) loc_note="  — same as option 3; your daylight window crosses midnight in TZ=$TIMEZONE";;
+            esac
             echo
             echo "Cron schedule — SBFspot internally gates on Latitude/Longitude + SunRSOffset,"
             echo "so the window below only affects how often we *try*. Pick one:"
@@ -452,14 +458,24 @@ if [[ $INSTALL_CRON == 1 ]]; then
     case "$CRON_PROFILE" in
         upstream) CRON_POLL="*/5 6-22 * * *";;
         location)
-            CRON_POLL="$(compute_location_cron "$LAT" "$LON" "$TIMEZONE")"
-            if [[ "$CRON_POLL" == "*/5 * * * *" ]]; then
-                warn "Location profile fell back to */5 * * * * because the daylight window at"
-                warn "lat=$LAT lon=$LON wraps past midnight in TZ=$TIMEZONE (or it's an Arctic"
-                warn "latitude). Functionally fine — SBFspot's sunrise/sunset gate still limits"
-                warn "actual polling — but if you want a tighter cron, set --tz to a zone that"
-                warn "matches your longitude, or pass --cron-profile upstream."
-            fi
+            { read -r CRON_POLL; read -r CRON_REASON; } < <(compute_location_cron "$LAT" "$LON" "$TIMEZONE")
+            case "$CRON_REASON" in
+                arctic)
+                    warn "Location profile fell back to */5 * * * * because your latitude (${LAT}°)"
+                    warn "is in the 20+ hour daylight zone on the summer solstice (near or inside the"
+                    warn "Arctic/Antarctic Circle). Functionally fine — SBFspot's sunrise/sunset gate"
+                    warn "still limits actual polling — but if you want a tighter cron pick"
+                    warn "--cron-profile upstream or --cron-profile custom."
+                    ;;
+                midnight-cross)
+                    warn "Location profile fell back to */5 * * * * because the daylight window at"
+                    warn "lat=${LAT}, lon=${LON} crosses midnight in TZ=${TIMEZONE}. This happens when"
+                    warn "lat/lon sit far from the longitude the timezone is built around."
+                    warn "Functionally fine — SBFspot's own gate handles actual polling — but for a"
+                    warn "tighter cron either set --tz to a zone matching your longitude, or pick"
+                    warn "--cron-profile upstream."
+                    ;;
+            esac
             ;;
         24x7)     CRON_POLL="*/5 * * * *";;
         custom)   [[ -n "$CRON_POLL" ]] || die "--cron-profile=custom requires --cron <spec>.";;
