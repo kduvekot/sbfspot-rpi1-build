@@ -113,6 +113,49 @@ We follow the [upstream Linux/SQLite wiki](https://github.com/SBFspot/SBFspot/wi
 
 Everything else — install directory, config file next to binary, cron window, archive time, flag usage — matches the wiki.
 
+## How it's built
+
+The workflow in `.github/workflows/build.yml` cross-compiles inside a genuine Raspbian Trixie armhf rootfs created by `debootstrap` — the same tool the Raspberry Pi Foundation uses to build Raspberry Pi OS itself.
+
+**Pipeline summary:**
+
+1. GitHub Actions runner (ubuntu-latest x86_64) installs `debootstrap` and `qemu-user-static`.
+2. Downloads the `raspbian-archive-keyring.deb` directly from `archive.raspbian.org` (it isn't in Ubuntu's repos).
+3. `debootstrap --arch=armhf trixie rootfs http://archive.raspbian.org/raspbian/` creates a minimal Raspbian userland.
+4. `qemu-arm-static` is copied into the rootfs and `binfmt_misc` transparently routes ARM binary execution to QEMU.
+5. Inside the chroot: `apt-get install` the build toolchain + `libbluetooth-dev`, `libboost-*-dev`, `libsqlite3-dev`, `libcurl4-openssl-dev`.
+6. `cd SBFspot && make sqlite` — exactly upstream's build command.
+7. Verification stage: strip `-dev` packages from the rootfs, reinstall only runtime libs, then check ELF class, `Tag_CPU_arch=v6`, `Tag_FP_arch=VFPv2`, `ldd` resolution, `SBFspot -version`, SQLite support, schema creation.
+8. Package + publish as a GitHub Release.
+
+### Why this approach
+
+Raspberry Pi OS itself is built by [`RPi-Distro/pi-gen`](https://github.com/RPi-Distro/pi-gen), which is also `debootstrap` + QEMU user-mode. Our workflow is **functionally equivalent to pi-gen's stage 0**:
+
+| | pi-gen stage 0 | our workflow |
+|---|---|---|
+| Bootstrap tool | `debootstrap` | `debootstrap` |
+| Archive | `archive.raspbian.org` | `archive.raspbian.org` |
+| Release codename | `trixie` (master branch) | `trixie` |
+| Keyring | `raspbian-archive-keyring` | `raspbian-archive-keyring` (fetched directly) |
+| Cross-arch exec | `qemu-user-binfmt` | `qemu-arm-static` + `binfmt_misc` |
+| After debootstrap | installs `raspberrypi-bootloader`, then moves on to stage 1 | installs build deps and compiles SBFspot |
+
+Pi-gen stages 1–5 add kernel, bootloader, firmware, `raspi-config`, desktop environments, etc. — **none of which affect a userland C++ binary**. Runtime optimisations like `libarmmem-v6l.so` come from `raspi-copies-and-fills` on the Pi's `/etc/ld.so.preload` and are transparent to our binary.
+
+**Net: ABI compatibility between our binary and your Pi OS Lite install is guaranteed by construction** — both link against identical `libc`, `libbluetooth3`, `libboost-*`, `libsqlite3-0` versions, because both pull from the same Raspbian archive for the same Trixie release.
+
+### Why we don't just use `pi-gen` directly
+
+`pi-gen` does support building individual stages (`STAGE_LIST="stage0"`). We considered depending on it, but:
+
+- Our workflow is ~25 lines of YAML, stable for 2+ years.
+- pi-gen's stage 0 is a similar amount of debootstrap+keyring logic, plus ~3k lines of surrounding bash for stages we don't use.
+- Reusing it would mean pinning to a specific pi-gen commit/tag, tracking their release cadence, and inheriting their failure modes (changed env vars, broken keyring URLs in a minor release, etc.) — in exchange for saving maybe 5–10 lines of our own code.
+- Since we're a direct mirror of stage 0's behaviour, pi-gen can't drift away from us unless we let it.
+
+So we document the equivalence and keep our own minimal implementation.
+
 ## Manual install (offline / advanced)
 
 If you don't want to curl-pipe a script, download the tarball from the [latest release](../../releases/latest) and run the bundled `install.sh`:

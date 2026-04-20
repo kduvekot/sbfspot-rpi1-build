@@ -22,7 +22,9 @@ trigger the workflow manually with the new tag as the input.
 
 **Build:** `ubuntu-latest` runner → `debootstrap` a Raspbian Trixie armhf rootfs →
 `qemu-arm-static` user-mode chroot into it → `make sqlite` inside. Produces
-armhf/ARMv6/VFPv2 ELF with dynamic linker `/lib/ld-linux-armhf.so.3`.
+armhf/ARMv6/VFPv2 ELF with dynamic linker `/lib/ld-linux-armhf.so.3`. Functionally
+equivalent to pi-gen stage 0 — see README "How it's built" for the full mapping
+and the rationale for not depending on pi-gen directly.
 
 **Why debootstrap + QEMU (vs simpler options):**
 - `debian:trixie --platform linux/arm/v6` falls back to armel (soft-float, wrong ABI).
